@@ -1,0 +1,40 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: canvas3t_api
+    environment:
+      FLASK_APP: app
+      IMAGE_DIR: /app/images
+      DB_PATH: /app/db/app.db
+      RESULTS_PER_PAGE: 24
+    volumes:
+      - canvas3t_images:/app/images
+      - canvas3t_db:/app/db
+    ports:
+      - "5000:5000"
+    depends_on:
+      - frontend
+    networks:
+      - canvas3t_net
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: canvas3t_frontend
+    environment:
+      VITE_API_URL: http://web:5000
+    ports:
+      - "5173:4173"
+    networks:
+      - canvas3t_net
+
+volumes:
+  canvas3t_images:
+  canvas3t_db:
+
+networks:
+  canvas3t_net:
+
