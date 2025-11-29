@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Painting } from "../api/paintings";
 import { useWasmTools } from "../hooks/useWasmTools";
 import { importRemoteImage } from "../api/paintings";
+import { createPainting } from "../api/paintings";
 
 type Props = {
   painting?: Painting;
@@ -23,7 +24,12 @@ const CanvasEditor = ({ painting }: Props) => {
   const [isEraser, setIsEraser] = useState(false);
   const [importUrl, setImportUrl] = useState("");
   const [status, setStatus] = useState<string | null>(null);
+  const [isImporting, setIsImporting] = useState(false);
   const [fillMode, setFillMode] = useState(false);
+
+  const [tool, setTool] = useState<'brush' | 'rect' | 'ellipse' | 'line' | 'text'>('brush');
+  const shapeStart = useRef<{ x: number; y: number } | null>(null);
+  const [textValue, setTextValue] = useState('');
 
   const { bindings, error } = useWasmTools();
 
@@ -39,6 +45,31 @@ const CanvasEditor = ({ painting }: Props) => {
     canvasRef.current.height = height;
     ctx.putImageData(data, 0, 0);
   }, [bindings]);
+
+  const mergeOverlayToEngine = useCallback(
+    (overlayCanvas: HTMLCanvasElement) => {
+      if (!engineRef.current) return;
+      const width = engineRef.current.width();
+      const height = engineRef.current.height();
+      const ctx = overlayCanvas.getContext('2d');
+      if (!ctx) return;
+      // Get existing engine pixels
+      const pixels = engineRef.current.export_pixels();
+      const existing = new ImageData(new Uint8ClampedArray(pixels), width, height);
+      const temp = document.createElement('canvas');
+      temp.width = width;
+      temp.height = height;
+      const tctx = temp.getContext('2d');
+      if (!tctx) return;
+      tctx.putImageData(existing, 0, 0);
+      // Draw overlay onto temp
+      tctx.drawImage(overlayCanvas, 0, 0, width, height);
+      const merged = tctx.getImageData(0, 0, width, height);
+      engineRef.current.load_pixels(new Uint8Array(merged.data.buffer), merged.width, merged.height);
+      render();
+    },
+    [render]
+  );
 
   useEffect(() => {
     if (!bindings) return;
@@ -74,10 +105,13 @@ const CanvasEditor = ({ painting }: Props) => {
 
   const pointerPosition = (event: { clientX: number; clientY: number }) => {
     const rect = canvasRef.current?.getBoundingClientRect();
-    if (!rect) return { x: 0, y: 0 };
+    if (!rect || !canvasRef.current) return { x: 0, y: 0 };
+    // Scale to canvas logical size (not display size) to fix DPI/scaling
+    const scaleX = canvasRef.current.width / rect.width;
+    const scaleY = canvasRef.current.height / rect.height;
     return {
-      x: event.clientX - rect.left,
-      y: event.clientY - rect.top
+      x: Math.floor((event.clientX - rect.left) * scaleX),
+      y: Math.floor((event.clientY - rect.top) * scaleY)
     };
   };
 
@@ -89,13 +123,62 @@ const CanvasEditor = ({ painting }: Props) => {
       setIsDrawing(false);
       return;
     }
-    setIsDrawing(true);
-    lastPoint.current = { x, y };
-    drawStroke(x, y);
+    if (tool === 'brush') {
+      setIsDrawing(true);
+      lastPoint.current = { x, y };
+      drawStroke(x, y);
+    } else if (tool === 'text') {
+      // insert text at point
+      const overlay = document.createElement('canvas');
+      overlay.width = engineRef.current.width();
+      overlay.height = engineRef.current.height();
+      const ctx = overlay.getContext('2d');
+      if (ctx) {
+        ctx.fillStyle = color;
+        ctx.font = `${brushSize * 2}px sans-serif`;
+        ctx.fillText(textValue || 'Text', x, y);
+        mergeOverlayToEngine(overlay);
+      }
+    } else {
+      // start shape
+      shapeStart.current = { x, y };
+      setIsDrawing(true);
+    }
   };
 
   const handlePointerUp = () => {
+    if (!isDrawing) return;
     setIsDrawing(false);
+    // finalize shape if any
+    if (tool !== 'brush' && shapeStart.current && engineRef.current) {
+      const start = shapeStart.current;
+      const end = lastPoint.current ?? start;
+      const overlay = document.createElement('canvas');
+      overlay.width = engineRef.current.width();
+      overlay.height = engineRef.current.height();
+      const ctx = overlay.getContext('2d');
+      if (ctx) {
+        ctx.strokeStyle = color;
+        ctx.fillStyle = color;
+        const w = (end.x ?? start.x) - start.x;
+        const h = (end.y ?? start.y) - start.y;
+        if (tool === 'rect') ctx.fillRect(start.x, start.y, w, h);
+        if (tool === 'line') {
+          ctx.beginPath();
+          ctx.moveTo(start.x, start.y);
+          ctx.lineTo(end.x ?? start.x, end.y ?? start.y);
+          ctx.lineWidth = Math.max(1, brushSize / 4);
+          ctx.stroke();
+        }
+        if (tool === 'ellipse') {
+          ctx.beginPath();
+          ctx.ellipse(start.x + w / 2, start.y + h / 2, Math.abs(w / 2), Math.abs(h / 2), 0, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        mergeOverlayToEngine(overlay);
+      }
+      shapeStart.current = null;
+    }
     lastPoint.current = null;
   };
 
@@ -119,7 +202,12 @@ const CanvasEditor = ({ painting }: Props) => {
   const handlePointerMove = (event: React.MouseEvent<HTMLCanvasElement>) => {
     if (!isDrawing) return;
     const { x, y } = pointerPosition(event);
-    drawStroke(x, y);
+    if (tool === 'brush') {
+      drawStroke(x, y);
+    } else {
+      // update last point for shape end position
+      lastPoint.current = { x, y };
+    }
   };
 
   const touchPoint = (event: React.TouchEvent<HTMLCanvasElement>) => {
@@ -182,13 +270,45 @@ const CanvasEditor = ({ painting }: Props) => {
   const handleImportUrl = async () => {
     if (!importUrl.trim()) return;
     setStatus("Importing image...");
+    setIsImporting(true);
     try {
       const data = await importRemoteImage({ image_url: importUrl });
-      await loadImage(data.data_url);
+      // Backend may return a saved painting (with image_url) or just metadata with data_url
+      const src = data?.painting?.image_url ?? data?.data_url ?? importUrl;
+      // If it's a relative URL (starts with /), load via the frontend base
+      const fullSrc = src.startsWith('/') ? src : src;
+      await loadImage(fullSrc);
       setStatus("Image imported");
+      setIsImporting(false);
     } catch (err) {
       console.error(err);
-      setStatus("Import failed");
+      // Server-side import failed — fallback to browser fetch + upload
+      setStatus("Server import failed, trying browser upload...");
+      try {
+        const resp = await fetch(importUrl, { mode: 'cors' });
+        if (!resp.ok) throw new Error(`Fetch failed: ${resp.status}`);
+        const blob = await resp.blob();
+        // Create FormData and upload using createPainting
+        const form = new FormData();
+        const title = importUrl.split('/').pop() || 'imported';
+        const extension = (blob.type && blob.type.split('/')[1]) || 'png';
+        form.append('title', title || 'Imported');
+        form.append('folder', 'imports');
+        form.append('tags', 'imported');
+        form.append('is_public', 'false');
+        form.append('format', extension.toUpperCase());
+        form.append('image', blob, `${title}.${extension}`);
+        const result = await createPainting(form);
+        const saved = result?.painting ?? result;
+        const src = saved?.image_url ?? importUrl;
+        await loadImage(src);
+        setStatus('Imported and saved');
+      } catch (err2) {
+        console.error(err2);
+        setStatus('Import failed');
+      } finally {
+        setIsImporting(false);
+      }
     }
   };
 
@@ -206,11 +326,27 @@ const CanvasEditor = ({ painting }: Props) => {
     <section className="canvas-pane">
       <div className="toolbar">
         <label>
-          Brush
+          Tool
+          <select value={tool} onChange={(e) => setTool(e.target.value as any)}>
+            <option value="brush">Brush</option>
+            <option value="rect">Rectangle</option>
+            <option value="ellipse">Ellipse</option>
+            <option value="line">Line</option>
+            <option value="text">Text</option>
+          </select>
+        </label>
+        {tool === 'text' && (
+          <label>
+            Text
+            <input value={textValue} onChange={(e) => setTextValue(e.target.value)} />
+          </label>
+        )}
+        <label>
+          Color
           <input type="color" value={color} onChange={(event) => setColor(event.target.value)} />
         </label>
         <label>
-          Size
+          Size: {brushSize}px
           <input
             type="range"
             min={1}
@@ -220,7 +356,7 @@ const CanvasEditor = ({ painting }: Props) => {
           />
         </label>
         <label>
-          Softness
+          Softness: {softness.toFixed(1)}
           <input
             type="range"
             min={0.1}
@@ -231,7 +367,7 @@ const CanvasEditor = ({ painting }: Props) => {
           />
         </label>
         <label>
-          Opacity
+          Opacity: {Math.round(opacity * 100)}%
           <input
             type="range"
             min={0.1}
@@ -241,8 +377,8 @@ const CanvasEditor = ({ painting }: Props) => {
             onChange={(event) => setOpacity(Number(event.target.value))}
           />
         </label>
-        <button type="button" onClick={() => setIsEraser((prev) => !prev)}>
-          {isEraser ? "Disable Eraser" : "Eraser"}
+        <button type="button" onClick={() => setIsEraser((prev) => !prev)} className={isEraser ? "active" : ""}>
+          {isEraser ? "✓ Eraser" : "Eraser"}
         </button>
         <button
           type="button"

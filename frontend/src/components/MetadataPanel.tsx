@@ -11,6 +11,7 @@ const MetadataPanel = ({ painting }: Props) => {
   const [title, setTitle] = useState(painting?.title ?? "");
   const [folder, setFolder] = useState(painting?.folder ?? "");
   const [tags, setTags] = useState(painting?.tags ?? "");
+  const [isPublic, setIsPublic] = useState(painting?.is_public ?? false);
   const [format, setFormat] = useState(painting?.format ?? "PNG");
   const [status, setStatus] = useState<string | null>(null);
   const [lastSaved, setLastSaved] = useState<string | null>(null);
@@ -20,12 +21,22 @@ const MetadataPanel = ({ painting }: Props) => {
     setTitle(painting?.title ?? "");
     setFolder(painting?.folder ?? "");
     setTags(painting?.tags ?? "");
+    setIsPublic(painting?.is_public ?? false);
     setFormat(painting?.format ?? "PNG");
   }, [painting]);
 
   const save = async () => {
     const canvas = document.querySelector("canvas");
-    if (!canvas) return;
+    if (!canvas) {
+      setStatus("No canvas found");
+      return;
+    }
+    
+    if (!user) {
+      setStatus("Must be logged in to save");
+      return;
+    }
+
     setStatus("Saving...");
     const mime =
       format === "JPEG" ? "image/jpeg" : format === "WEBP" ? "image/webp" : "image/png";
@@ -37,12 +48,12 @@ const MetadataPanel = ({ painting }: Props) => {
       setStatus("Failed to capture canvas");
       return;
     }
+
     const data = new FormData();
-    const userId = painting?.user_id ?? user?.id ?? 1;
-    data.append("user_id", String(userId));
-    data.append("title", title);
+    data.append("title", title || "Untitled");
     data.append("folder", folder);
     data.append("tags", tags);
+    data.append("is_public", String(isPublic));
     data.append("format", format);
     const extension = format === "JPEG" ? "jpg" : format.toLowerCase();
     data.append("image", blob, `${title || "untitled"}.${extension}`);
@@ -50,15 +61,25 @@ const MetadataPanel = ({ painting }: Props) => {
     try {
       if (painting) {
         await updatePainting(String(painting.id), data);
+        setStatus("Updated successfully");
       } else {
-        await createPainting(data);
+        const result = await createPainting(data);
+        // Backend returns { message, painting }
+        const saved = result?.painting ?? result;
+        setStatus("Saved successfully");
+        console.log("Painting saved:", saved);
+        // Notify other parts of the app that a painting was saved
+        try {
+          window.dispatchEvent(new CustomEvent('paintingSaved', { detail: saved }));
+        } catch {}
       }
       const timestamp = new Date().toLocaleTimeString();
       setLastSaved(timestamp);
       setStatus(`Saved at ${timestamp}`);
     } catch (error) {
-      setStatus("Save failed");
-      console.error(error);
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      setStatus(`Save failed: ${errorMsg}`);
+      console.error("Save error:", error);
     }
   };
 
@@ -88,12 +109,22 @@ const MetadataPanel = ({ painting }: Props) => {
           <option value="WEBP">WEBP</option>
         </select>
       </label>
+      <label style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+        <input
+          type="checkbox"
+          checked={isPublic}
+          onChange={(event) => setIsPublic(event.target.checked)}
+        />
+        Public (others can see)
+      </label>
       {painting?.width && painting?.height && (
         <p className="metadata-panel__info">
           {painting.width} × {painting.height} — {painting.format}
         </p>
       )}
-      <button onClick={save}>Save painting</button>
+      <button onClick={save} disabled={!user}>
+        {!user ? "Login to save" : "Save painting"}
+      </button>
       {status && <p className="status">{status}</p>}
       {lastSaved && <p className="metadata-panel__info">Last saved {lastSaved}</p>}
     </aside>

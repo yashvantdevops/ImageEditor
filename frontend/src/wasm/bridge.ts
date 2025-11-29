@@ -46,15 +46,26 @@ const normalizeFilterEnum = (input: Record<string, unknown>): NormalizedFilterMa
 export const loadNativeWasm = (): Promise<NormalizedWasm> => {
   if (!cachedNative) {
     cachedNative = (async () => {
-      const wasm = await import("./pkg/canvas3t_tools.js");
-      if (typeof wasm.default === "function") {
-        await wasm.default();
+      try {
+        // Import using the actual path - vite will handle the hashing
+        const wasm = await import("./pkg/canvas3t_tools");
+        
+        // Handle both default export and named exports
+        const wasmModule = wasm.default || wasm;
+        
+        if (typeof wasmModule === "function") {
+          await wasmModule();
+        }
+        
+        return {
+          CanvasEngine: wasm.CanvasEngine,
+          BrushOptions: wasm.BrushOptions,
+          FilterType: normalizeFilterEnum(wasm.FilterType ?? {})
+        };
+      } catch (err) {
+        console.error("WASM loading failed:", err);
+        throw new Error(`Failed to load WASM: ${err instanceof Error ? err.message : String(err)}`);
       }
-      return {
-        CanvasEngine: wasm.CanvasEngine,
-        BrushOptions: wasm.BrushOptions,
-        FilterType: normalizeFilterEnum(wasm.FilterType ?? {})
-      };
     })();
   }
   return cachedNative;

@@ -38,6 +38,8 @@ class PaintingSchema(Schema):
     tools_used = fields.Str(allow_none=True)
     tags = fields.Str(allow_none=True)
     folder = fields.Str(allow_none=True)
+    is_public = fields.Bool(allow_none=True)
+    prefix = fields.Str(dump_only=True)
     created_at = fields.DateTime(dump_only=True)
     updated_at = fields.DateTime(dump_only=True)
     image_url = fields.Str(dump_only=True)

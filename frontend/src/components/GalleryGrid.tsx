@@ -6,7 +6,7 @@ type Props = {
 };
 
 const GalleryGrid = ({ paintings }: Props) => {
-  if (!paintings.length) {
+  if (!paintings || paintings.length === 0) {
     return <p>No paintings yet. Create one in the editor!</p>;
   }
 
@@ -26,11 +26,17 @@ const GalleryGrid = ({ paintings }: Props) => {
             />
             <div className="thumbnail-card__meta">
               <h3>{painting.title || `Untitled #${painting.id}`}</h3>
+              <p className="artist">by {painting.username || 'Anonymous'}</p>
               <p>{new Date(painting.created_at).toLocaleString()}</p>
-              {painting.format && <span className="badge subtle">{painting.format}</span>}
+              <div className="badges">
+                {painting.format && <span className="badge subtle">{painting.format}</span>}
+                <span className={`badge ${painting.is_public ? 'public' : 'private'}`}>
+                  {painting.is_public ? '🌐 Public' : '🔒 Private'}
+                </span>
+              </div>
               {painting.tags && (
                 <p className="thumbnail-card__tags">
-                  {painting.tags
+                  {String(painting.tags)
                     .split(",")
                     .map((tag) => tag.trim())
                     .filter(Boolean)
@@ -42,6 +48,11 @@ const GalleryGrid = ({ paintings }: Props) => {
           </Link>
           <footer>
             <Link to={`/editor/${painting.id}`}>Edit</Link>
+            {painting.image_url && (
+              <a href={painting.image_url} download target="_blank" rel="noopener noreferrer">
+                Download
+              </a>
+            )}
           </footer>
         </article>
       ))}
